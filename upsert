@@ -1,0 +1,119 @@
+import json
+from pathlib import Path
+
+FOLDER = Path(r"")
+
+DEL_SUFFIX = "_inc_del"
+U_SUFFIX = "_inc_mode_with_U"
+
+def is_json_array(text: str) -> bool:
+    return text.lstrip().startswith("[")
+
+def process_ndjson(path: Path):
+    kept = []
+    deleted = []
+
+    with path.open("r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"{path.name}: invalid JSON at line {line_no}: {e}")
+
+            if obj.get("header__change_oper") == "D":
+                deleted.append(obj)
+            else:
+                kept.append(obj)
+
+    return kept, deleted
+
+def process_json_array(path: Path):
+    data = json.loads(path.read_text(encoding="utf-8"))
+
+    if not isinstance(data, list):
+        raise ValueError(f"{path.name}: expected JSON array")
+
+    kept = []
+    deleted = []
+
+    for obj in data:
+        if isinstance(obj, dict) and obj.get("header__change_oper") == "D":
+            deleted.append(obj)
+        else:
+            kept.append(obj)
+
+    return kept, deleted
+
+def write_ndjson(path: Path, records):
+    if records:
+        path.write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n",
+            encoding="utf-8"
+        )
+    else:
+        path.write_text("", encoding="utf-8")
+
+def write_array(path: Path, records):
+    path.write_text(
+        json.dumps(records, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8"
+    )
+
+def main():
+    json_files = [p for p in FOLDER.iterdir() if p.is_file() and p.suffix.lower() == ".json"]
+
+    if not json_files:
+        print("No JSON files found.")
+        return
+
+    print(f"Processing {len(json_files)} file(s)...\n")
+
+    for path in sorted(json_files):
+        name = path.name
+
+        # Skip already-generated files
+        if name.endswith(f"{DEL_SUFFIX}.json") or name.endswith(f"{U_SUFFIX}.json"):
+            print(f"SKIP: {name}")
+            continue
+
+        text = path.read_text(encoding="utf-8")
+
+        try:
+            if is_json_array(text):
+                kept, deleted = process_json_array(path)
+                writer = write_array
+                fmt = "ARRAY"
+            else:
+                kept, deleted = process_ndjson(path)
+                writer = write_ndjson
+                fmt = "NDJSON"
+        except Exception as e:
+            print(f"ERROR: {name} -> {e}")
+            continue
+
+        # Write _inc_mode_with_U file
+        u_file = path.with_name(f"{path.stem}{U_SUFFIX}{path.suffix}")
+        writer(u_file, kept)
+
+        # Write _inc_del file only if deletes exist
+        if deleted:
+            del_file = path.with_name(f"{path.stem}{DEL_SUFFIX}{path.suffix}")
+            writer(del_file, deleted)
+
+        # Remove original file
+        path.unlink()
+
+        print(
+            f"OK: {name} [{fmt}] → "
+            f"{u_file.name} (U={len(kept)}), "
+            f"{len(deleted)} delete(s)"
+        )
+
+    print("\nDone.")
+
+if __name__ == "__main__":
+    main()
